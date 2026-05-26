@@ -44,16 +44,6 @@ const YT_DLP = (() => {
 
 const YTDLP_PLAYER_CLIENT = process.env.YTDLP_PLAYER_CLIENT || "android_vr";
 
-function buildExtractorArgs() {
-  const parts = [`youtube:player_client=${YTDLP_PLAYER_CLIENT}`];
-  const poToken = (process.env.YTDLP_PO_TOKEN || "").trim();
-  if (poToken) {
-    console.log("[yt-dlp] Using PO Token for HQ downloads");
-    parts.push(`youtube:po_token=${poToken}`);
-  }
-  return parts.flatMap((p) => ["--extractor-args", p]);
-}
-
 const extraArgsFromEnv = (process.env.YTDLP_EXTRA_ARGS || "")
   .split(",")
   .map((s) => s.trim())
@@ -65,7 +55,15 @@ if (cookieBrowser.trim()) {
   cookieArgs.push("--cookies-from-browser", cookieBrowser.trim());
 }
 
-const YTDLP_EXTRA_ARGS = [...cookieArgs, ...buildExtractorArgs(), ...extraArgsFromEnv];
+const poToken = (process.env.YTDLP_PO_TOKEN || "").trim();
+
+function buildClientExtractorArgs(client) {
+  const parts = [`youtube:player_client=${client}`];
+  if (poToken) {
+    parts.push(`youtube:po_token=${poToken}`);
+  }
+  return parts.flatMap((p) => ["--extractor-args", p]);
+}
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
@@ -76,44 +74,16 @@ function sanitizeFilename(name) {
   return name.replace(/[\\/*?:"<>|]/g, "_").trim();
 }
 
-/**
- * Run yt-dlp with given args, return { stdout, stderr }.
- * Rejects on non-zero exit code.
- */
-function runYtDlp(args) {
-  return new Promise((resolve, reject) => {
-    const allArgs = [...YTDLP_EXTRA_ARGS, ...args];
-    const proc = spawn(YT_DLP, allArgs);
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (d) => (stdout += d.toString()));
-    proc.stderr.on("data", (d) => (stderr += d.toString()));
-
-    proc.on("close", (code) => {
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(stderr || `yt-dlp exited with code ${code}`));
-    });
-
-    proc.on("error", (err) => {
-      if (err.code === "ENOENT") {
-        reject(new Error("yt-dlp chưa được cài. Chạy: pip install yt-dlp"));
-      } else {
-        reject(err);
-      }
-    });
-  });
-}
-
 // ─── In-memory download state (progress tracking) ─────────────────────────────
 
 const downloads = new Map(); // downloadId → { status, progress, filename, outFile, error }
 
 /**
  * Download video to temp file with progress reporting.
+ * Tries player_client fallbacks on auth errors.
  * Calls onProgress({ percent, speed, eta }) for each yt-dlp progress line.
  */
-function downloadToFile(args, downloadId, opts, onProgress) {
+async function downloadToFile(args, downloadId, opts, onProgress) {
   if (typeof opts === "function") {
     onProgress = opts;
     opts = {};
@@ -123,61 +93,79 @@ function downloadToFile(args, downloadId, opts, onProgress) {
   const tmpPath = path.join(os.tmpdir(), `ytdl_${downloadId}`);
   const outFile = tmpPath + "." + outExt;
 
-  const dlArgs = [...YTDLP_EXTRA_ARGS, ...args];
-  if (mergeFormat) dlArgs.push("--merge-output-format", mergeFormat);
-  dlArgs.push(
-    "-o", outFile,
-    "--no-part",
-    "--progress-template", "%(progress._percent_str)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s",
-  );
+  const clients = [...new Set([YTDLP_PLAYER_CLIENT, ...CLIENT_FALLBACKS])];
+  let lastErr;
 
-  const proc = spawn(YT_DLP, dlArgs);
-  let stderr = "";
-
-  // Progress template writes to stdout, not stderr
-  proc.stdout.on("data", (d) => {
-    const text = d.toString();
-
-    // Parse progress lines: "percent_str|total_bytes|speed|eta"
-    const lines = text.split("\n").filter((l) => l.includes("|"));
-    for (const line of lines) {
-      const parts = line.trim().split("|");
-      if (parts.length >= 4) {
-        const percent = parseFloat(parts[0]) || 0; // e.g. "  0.0%", "47.6%"
-        const total = parseInt(parts[1], 10) || null;
-        const speed = parseFloat(parts[2]) || 0;
-        const eta = parseInt(parts[3], 10) || 0;
-        if (percent > 0 && percent < 100) {
-          onProgress({ percent: Math.round(percent), total, speed, eta });
-        }
-      }
+  for (const client of clients) {
+    const clientArgs = buildClientExtractorArgs(client);
+    if (client !== YTDLP_PLAYER_CLIENT) {
+      console.log(`[yt-dlp] Retrying download with player_client=${client} ...`);
     }
-  });
 
-  proc.stderr.on("data", (d) => (stderr += d.toString()));
+    const dlArgs = [...clientArgs, ...cookieArgs, ...extraArgsFromEnv, ...args];
+    if (mergeFormat) dlArgs.push("--merge-output-format", mergeFormat);
+    dlArgs.push(
+      "-o", outFile,
+      "--no-part",
+      "--progress-template", "%(progress._percent_str)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s",
+    );
 
-  return new Promise((resolve, reject) => {
-    proc.on("close", (code) => {
-      if (code !== 0) {
-        return reject(new Error(stderr || `yt-dlp failed (code ${code})`));
-      }
+    try {
+      await new Promise((resolve, reject) => {
+        const proc = spawn(YT_DLP, dlArgs);
+        let stderr = "";
 
-      if (!fs.existsSync(outFile)) {
-        return reject(new Error("File đầu ra không tìm thấy sau khi tải."));
-      }
+        proc.stdout.on("data", (d) => {
+          const text = d.toString();
+          const lines = text.split("\n").filter((l) => l.includes("|"));
+          for (const line of lines) {
+            const parts = line.trim().split("|");
+            if (parts.length >= 4) {
+              const percent = parseFloat(parts[0]) || 0;
+              const total = parseInt(parts[1], 10) || null;
+              const speed = parseFloat(parts[2]) || 0;
+              const eta = parseInt(parts[3], 10) || 0;
+              if (percent > 0 && percent < 100) {
+                onProgress({ percent: Math.round(percent), total, speed, eta });
+              }
+            }
+          }
+        });
+
+        proc.stderr.on("data", (d) => (stderr += d.toString()));
+
+        proc.on("close", (code) => {
+          if (code !== 0) {
+            return reject(new Error(stderr || `yt-dlp failed (code ${code})`));
+          }
+          if (!fs.existsSync(outFile)) {
+            return reject(new Error("File đầu ra không tìm thấy sau khi tải."));
+          }
+          resolve();
+        });
+
+        proc.on("error", (err) => {
+          if (err.code === "ENOENT") {
+            reject(new Error("yt-dlp chưa được cài. Chạy: pip install yt-dlp"));
+          } else {
+            reject(err);
+          }
+        });
+      });
 
       onProgress({ percent: 100, downloaded: null, total: null, speed: 0, eta: 0 });
-      resolve(outFile);
-    });
-
-    proc.on("error", (err) => {
-      if (err.code === "ENOENT") {
-        reject(new Error("yt-dlp chưa được cài. Chạy: pip install yt-dlp"));
-      } else {
-        reject(err);
+      return outFile;
+    } catch (err) {
+      lastErr = err;
+      const msg = (err.message || "").toLowerCase();
+      if (msg.includes("sign in") || msg.includes("bot") || msg.includes("age") || msg.includes("login")) {
+        continue;
       }
-    });
-  });
+      throw err;
+    }
+  }
+
+  throw lastErr;
 }
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
@@ -187,6 +175,63 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
+// ── Client fallback: try android_vr → android → web ─────────────────────────
+const CLIENT_FALLBACKS = ["android_vr", "android", "web"];
+
+/**
+ * Run yt-dlp with the given global args injected, plus any extra args.
+ * Tries each player_client in CLIENT_FALLBACKS on auth-related errors.
+ * Returns { stdout, stderr }.
+ */
+async function runYtDlpWithFallback(args) {
+  const clients = [...new Set([YTDLP_PLAYER_CLIENT, ...CLIENT_FALLBACKS])];
+  let lastErr;
+
+  for (const client of clients) {
+    const clientArgs = buildClientExtractorArgs(client);
+    if (client !== YTDLP_PLAYER_CLIENT) {
+      console.log(`[yt-dlp] Retrying with player_client=${client} ...`);
+    }
+
+    try {
+      const allArgs = [...clientArgs, ...cookieArgs, ...extraArgsFromEnv, ...args];
+      const proc = spawn(YT_DLP, allArgs);
+      let stdout = "";
+      let stderr = "";
+
+      proc.stdout.on("data", (d) => (stdout += d.toString()));
+      proc.stderr.on("data", (d) => (stderr += d.toString()));
+
+      const result = await new Promise((resolve, reject) => {
+        proc.on("close", (code) => {
+          if (code === 0) resolve({ stdout, stderr });
+          else reject(new Error(stderr || `yt-dlp exited with code ${code}`));
+        });
+        proc.on("error", (err) => {
+          if (err.code === "ENOENT") {
+            reject(new Error("yt-dlp chưa được cài. Chạy: pip install yt-dlp"));
+          } else {
+            reject(err);
+          }
+        });
+      });
+
+      return result;
+    } catch (err) {
+      lastErr = err;
+      const msg = (err.message || "").toLowerCase();
+
+      // Only retry for auth/bot-related errors
+      if (msg.includes("sign in") || msg.includes("bot") || msg.includes("age") || msg.includes("login")) {
+        continue;
+      }
+      throw err; // Non-auth error — don't retry
+    }
+  }
+
+  throw lastErr;
+}
+
 // POST /api/info  →  fetch video metadata + available formats
 app.post("/api/info", async (req, res) => {
   const { url } = req.body;
@@ -195,7 +240,7 @@ app.post("/api/info", async (req, res) => {
   }
 
   try {
-    const { stdout } = await runYtDlp([
+    const { stdout } = await runYtDlpWithFallback([
       "--dump-json",
       "--no-playlist",
       "--quiet",
@@ -231,10 +276,6 @@ app.post("/api/info", async (req, res) => {
       if (f.fps && f.fps > 30) parts.push(`${Math.round(f.fps)}fps`);
       parts.push(ext.toUpperCase());
 
-      // Use format selector that includes audio for this height ceiling.
-      // `bestvideo[height<=H]+bestaudio/best[height<=H]` picks best video up to
-      // that height + best audio, then merges via ffmpeg.  Falls back to best
-      // combined format under that height if separate streams aren't available.
       const formatSel = `bestvideo[height<=${height}]+bestaudio/best[height<=${height}]`;
 
       qualityOptions.push({
@@ -260,14 +301,33 @@ app.post("/api/info", async (req, res) => {
     });
   } catch (err) {
     const msg = err.message || "";
+    const msgLower = msg.toLowerCase();
+
     if (msg.includes("403") || msg.includes("Forbidden") || msg.includes("SABR")) {
       return res.status(400).json({
-        error: "YouTube đang chặn yêu cầu. Hãy thêm cookies trình duyệt: chạy app với YTDLP_EXTRA_ARGS=\"--cookies-from-browser,chrome\"",
+        error: "YouTube đang chặn yêu cầu từ IP máy chủ. Không thể tải video này.",
       });
     }
-    if (msg.includes("Sign in") || msg.toLowerCase().includes("bot")) {
-      return res.status(400).json({ error: "Video bị hạn chế hoặc yêu cầu đăng nhập." });
+
+    // Age-restricted
+    if (msgLower.includes("age") && (msgLower.includes("restrict") || msgLower.includes("confirm") || msgLower.includes("verif"))) {
+      return res.status(400).json({
+        error: "Video bị giới hạn độ tuổi. Cần đăng nhập để xem, nhưng máy chủ hiện không hỗ trợ cookie. Vui lòng thử video khác.",
+      });
     }
+
+    // Sign-in / bot check
+    if (msgLower.includes("sign in") || msgLower.includes("bot") || msgLower.includes("login")) {
+      return res.status(400).json({
+        error: "Video yêu cầu đăng nhập hoặc YouTube nghi ngờ bot. Thử: (1) Dùng video khác, (2) Set YTDLP_PO_TOKEN trên Railway.",
+      });
+    }
+
+    // Private / unavailable / region-locked
+    if (msgLower.includes("private") || msgLower.includes("unavailable") || msgLower.includes("removed") || msgLower.includes("deleted")) {
+      return res.status(400).json({ error: `Video không khả dụng: ${msg.slice(0, 200)}` });
+    }
+
     return res.status(400).json({ error: `Không thể tải thông tin: ${msg.slice(0, 300)}` });
   }
 });
@@ -285,7 +345,7 @@ app.post("/api/download/start", async (req, res) => {
   // Get title for filename
   let title = "video";
   try {
-    const { stdout } = await runYtDlp(["--get-title", "--no-playlist", "--quiet", url]);
+    const { stdout } = await runYtDlpWithFallback(["--get-title", "--no-playlist", "--quiet", url]);
     title = sanitizeFilename(stdout.trim()) || "video";
   } catch (_) {}
 
@@ -445,7 +505,7 @@ app.post("/api/download-audio/start", async (req, res) => {
 
   let title = "audio";
   try {
-    const { stdout } = await runYtDlp(["--get-title", "--no-playlist", "--quiet", url]);
+    const { stdout } = await runYtDlpWithFallback(["--get-title", "--no-playlist", "--quiet", url]);
     title = sanitizeFilename(stdout.trim()) || "audio";
   } catch (_) {}
 

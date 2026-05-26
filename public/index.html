@@ -474,6 +474,49 @@
       line-height: 1.5;
     }
 
+    /* ─── Donate ─── */
+    .donate-card {
+      margin-top: 40px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 32px 28px;
+      text-align: center;
+      box-shadow: var(--card-shadow);
+    }
+
+    .donate-card h2 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.8rem;
+      letter-spacing: 0.04em;
+      margin-bottom: 8px;
+      color: var(--text);
+    }
+
+    .donate-card h2 span { color: var(--accent); }
+
+    .donate-card .donate-text {
+      color: var(--muted);
+      font-size: 0.88rem;
+      margin-bottom: 24px;
+      line-height: 1.6;
+    }
+
+    .donate-qr {
+      width: 180px;
+      height: 180px;
+      border-radius: 12px;
+      border: 2px solid var(--border);
+      display: block;
+      margin: 0 auto 12px;
+    }
+
+    .donate-thanks {
+      font-size: 0.78rem;
+      color: var(--muted);
+      font-style: italic;
+    }
+
     /* ─── Note ─── */
     .note {
       margin-top: 32px;
@@ -586,6 +629,16 @@
       <div class="feat-title">MP3 320kbps</div>
       <div class="feat-desc">Trích xuất âm thanh chất lượng cao</div>
     </div>
+  </div>
+
+  <div class="donate-card">
+    <h2>Ủng hộ <span>VIDGET</span></h2>
+    <p class="donate-text">
+      Nếu bạn thấy công cụ này hữu ích, hãy mời tôi một ly cà phê nhé!<br/>
+      Mọi đóng góp đều là động lực để mình tiếp tục phát triển.
+    </p>
+    <img class="donate-qr" src="/images/donate-qr-code.jpg" alt="QR Code Donate" />
+    <p class="donate-thanks">Cảm ơn bạn rất nhiều! ❤️</p>
   </div>
 
   <div class="note" id="qualityNote" style="display:none">

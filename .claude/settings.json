@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 yt_downloader.py \"https://www.youtube.com/watch?v=LXb3EKWsInQ\" -o /tmp)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" https://yt-download-production-ce38.up.railway.app/)",
+      "Bash(curl -s -X POST https://yt-download-production-ce38.up.railway.app/api/info -H 'Content-Type: application/json' -d '{\"url\":\"https://www.youtube.com/watch?v=jNQXAC9IVRw\"}')",
+      "Bash(curl -s -X POST https://yt-download-production-ce38.up.railway.app/api/info -H 'Content-Type: application/json' -d '{\"url\":\"https://www.youtube.com/watch?v=dQw4w9WgXcQ\"}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:v for k,v in d.items\\(\\) if k != 'formats'}, indent=2\\)\\)\")",
+      "Bash(node --check /Users/macos/Documents/Code/Personal/my-pj/yt-downloader-node/server.js)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\('title','ERROR: '\\)+str\\(d.get\\('error',''\\)\\)\\)\")",
+      "Bash(curl -s -X POST https://yt-download-production-ce38.up.railway.app/api/info -H 'Content-Type: application/json' -d '{\"url\":\"https://www.youtube.com/watch?v=JGwWNGJdvx8\"}')"
+    ]
+  }
+}
